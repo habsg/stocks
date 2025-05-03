@@ -45,9 +45,11 @@ TERM_DEFINITIONS = {
     "Free cash flow last year": "(FCF) The cash a company produces after accounting for cash outflows to support operations and maintain its capital assets. Higher is generally better.",
     "Price to Earning": "(P/E Ratio) The ratio of a company's share price to the company's earnings per share. Lower can indicate undervaluation, but context is important.",
     "Price to book value": "(P/B Ratio) Compares a company's market capitalization to its book value. Lower can indicate undervaluation.",
-    "Debt to equity": "(D/E Ratio) Measures a company's financial leverage, calculated by dividing its total liabilities by its stockholders' equity. Lower generally indicates less risk.",
+    "Debt to equity": "(D/E Ratio) Measures a company's financial leverage, calculated by dividing its total liabilities by its stockholders’ equity. Lower generally indicates less risk.",
     "Debt": "Total amount of debt held by the company. Lower is generally preferred.",
     "Market Capitalization": "The total market value of a company's outstanding shares of stock. Often used to size up corporations.",
+    "Net Profit": "The actual profit after working expenses not included in the calculation of gross profit have been paid.",
+    "Last Year Profit": "The profit figure from the previous financial year."
     # Add more definitions as needed
 }
 
@@ -217,19 +219,37 @@ def load_data(uploaded_file):
         if "Name" in df.columns: df.dropna(subset=["Name"], inplace=True)
         else: return None, "Critical Error: 'Name' column not found.", []
 
-        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        # DEBUG: Print original dtypes
+        # print("Original dtypes:\n", df.dtypes)
+
+        numeric_cols_initial = df.select_dtypes(include=np.number).columns.tolist()
+        converted_cols = []
         for col in df.select_dtypes(include=["object"]).columns:
              if col in ESSENTIAL_COLUMNS: continue
              try:
-                 converted_col = pd.to_numeric(df[col], errors='coerce')
+                 # Attempt conversion, cleaning common currency/percentage symbols first
+                 cleaned_col = df[col].astype(str).str.replace(r'[$,%,₹,Cr]', '', regex=True).str.strip()
+                 converted_col = pd.to_numeric(cleaned_col, errors='coerce')
+                 # Check if *any* value was successfully converted (not all NaN)
                  if not converted_col.isnull().all():
                      df[col] = converted_col
-                     if col not in numeric_cols:
-                         numeric_cols.append(col)
-             except Exception:
+                     converted_cols.append(col)
+                     # DEBUG: Print successful conversion
+                     # print(f"Successfully converted '{col}' to numeric.")
+                 # else:
+                     # DEBUG: Print failed conversion
+                     # print(f"Failed to convert '{col}' to numeric (all NaN after conversion).")
+             except Exception as e:
+                 # DEBUG: Print error during conversion
+                 # print(f"Error converting '{col}': {e}")
                  continue
 
-        final_numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        # Combine initially numeric and successfully converted columns
+        final_numeric_cols = list(set(numeric_cols_initial + converted_cols))
+
+        # DEBUG: Print final dtypes and identified numeric cols
+        # print("Final dtypes:\n", df.dtypes)
+        # print("Identified numeric columns:", final_numeric_cols)
 
         return df, None, final_numeric_cols
     except Exception as e:
@@ -290,6 +310,7 @@ def calculate_scores(df, params_weights, params_direction):
                  df_scored[norm_col_name] = 0.5 # Assign mid-score for neutral params
 
         normalized_weight = weight / total_weight
+        # Ensure normalized score is not NaN before adding to composite score
         df_scored["Composite Score"] += df_scored[norm_col_name].fillna(0) * normalized_weight
 
     df_scored["Rank"] = df_scored["Composite Score"].rank(ascending=False, method="min").astype(int)
@@ -306,11 +327,11 @@ error_message = None
 all_numeric_cols = []
 
 if uploaded_file is not None:
+    # Reset state if file changes
     if 'current_file_name' not in st.session_state or st.session_state.current_file_name != uploaded_file.name:
-        st.session_state.defaults_applied = False
+        st.session_state.clear() # Clear entire state for new file
         st.session_state.current_file_name = uploaded_file.name
-        # Clear previous selections when new file uploaded
-        if 'selected_params' in st.session_state: del st.session_state['selected_params']
+        st.session_state.defaults_applied = False
 
     df_raw, error_message, all_numeric_cols = load_data(uploaded_file)
 
@@ -321,15 +342,9 @@ if df_raw is None:
     st.info("Please upload a data file to begin analysis.")
     st.stop()
 
-st.success(f"Successfully loaded data from '{uploaded_file.name}' with {df_raw.shape[0]} rows and {df_raw.shape[1]} columns.")
+st.success(f"Successfully loaded and processed '{uploaded_file.name}'. Found {len(df_raw)} companies and {len(all_numeric_cols)} potential numeric parameters.")
 
-# --- Sidebar Configuration --- #
-st.sidebar.header("⚙️ Analysis Configuration")
-
-if not all_numeric_cols:
-    st.error("No numeric columns detected in the uploaded file for analysis.")
-    st.stop()
-
+# --- Sidebar Controls --- #
 params_direction = {col: infer_direction(col) for col in all_numeric_cols}
 default_params_available = [p for p in DEFAULT_PARAMS_WEIGHTS if p in all_numeric_cols]
 
@@ -338,7 +353,7 @@ if 'defaults_applied' not in st.session_state: st.session_state.defaults_applied
 if 'selected_params' not in st.session_state:
      st.session_state.selected_params = default_params_available
 
-# Apply defaults logic
+# Apply defaults logic only once per file upload
 if not st.session_state.defaults_applied:
      current_selection = default_params_available
      st.session_state.selected_params = current_selection
@@ -359,16 +374,99 @@ if not st.session_state.defaults_applied:
          st.info(suggestion_note)
      # --- End Suggestion Note ---
 else:
+     # Use selection from state if defaults already applied
      current_selection = st.session_state.selected_params if st.session_state.selected_params else default_params_available
 
+# --- Parameter Selection --- #
+st.sidebar.subheader("Analysis Parameters")
 selected_params = st.sidebar.multiselect(
     "Select Parameters for Analysis:",
     options=all_numeric_cols,
     default=current_selection,
     key="param_selector"
 )
-st.session_state.selected_params = selected_params
+st.session_state.selected_params = selected_params # Update state
 
+# --- Dynamic Range Filter (Market Cap / Profit) --- #
+filter_col = None
+filter_col_name = ""
+# Prioritize Market Cap
+market_cap_cols = [col for col in df_raw.columns if "market cap" in col.lower() or "market capitalization" in col.lower()]
+# DEBUG: Print found market cap columns
+# print("Found potential market cap columns:", market_cap_cols)
+
+if market_cap_cols:
+    potential_col = market_cap_cols[0]
+    # DEBUG: Print potential column and its dtype
+    # print(f"Checking potential filter column: '{potential_col}', dtype: {df_raw[potential_col].dtype}")
+    # Check if the column is actually numeric in the DataFrame *after* loading
+    if pd.api.types.is_numeric_dtype(df_raw[potential_col]):
+        filter_col = potential_col
+        filter_col_name = "Market Capitalization" # Use consistent name
+        # DEBUG: Print confirmation
+        # print(f"Using '{filter_col}' for filtering.")
+    # else:
+        # DEBUG: Print why it wasn't selected
+        # print(f"Column '{potential_col}' is not numeric, skipping for filter.")
+
+# Fallback to Profit if Market Cap not found or not numeric
+if filter_col is None:
+    profit_cols = [col for col in df_raw.columns if "net profit" in col.lower() or "last year profit" in col.lower() or col.lower() == "profit after tax"]
+    # DEBUG: Print found profit columns
+    # print("Found potential profit columns:", profit_cols)
+    if profit_cols:
+        potential_col = profit_cols[0]
+        # DEBUG: Print potential column and its dtype
+        # print(f"Checking potential filter column: '{potential_col}', dtype: {df_raw[potential_col].dtype}")
+        if pd.api.types.is_numeric_dtype(df_raw[potential_col]):
+            filter_col = potential_col
+            filter_col_name = potential_col # Use actual column name
+            # DEBUG: Print confirmation
+            # print(f"Using '{filter_col}' for filtering.")
+        # else:
+            # DEBUG: Print why it wasn't selected
+            # print(f"Column '{potential_col}' is not numeric, skipping for filter.")
+
+# Initialize filter range in session state
+if filter_col and f'{filter_col}_range' not in st.session_state:
+    min_val = float(df_raw[filter_col].min())
+    max_val = float(df_raw[filter_col].max())
+    # Ensure min/max are valid before setting state
+    if pd.notna(min_val) and pd.notna(max_val) and min_val <= max_val:
+        st.session_state[f'{filter_col}_range'] = (min_val, max_val)
+    else:
+        # Handle case where min/max couldn't be determined (e.g., all NaNs)
+        st.session_state[f'{filter_col}_range'] = (0.0, 0.0) # Default or placeholder
+        filter_col = None # Disable filter if range is invalid
+        # print(f"Could not determine valid min/max for '{filter_col}', disabling filter.")
+
+# Display the slider if a valid filter column is found
+if filter_col:
+    st.sidebar.subheader(f"Filter by {filter_col_name}")
+    # Retrieve min/max again in case they were invalid initially
+    min_val = float(df_raw[filter_col].min())
+    max_val = float(df_raw[filter_col].max())
+    # Ensure min/max are valid before creating slider
+    if pd.notna(min_val) and pd.notna(max_val) and min_val <= max_val:
+        # Get the stored range, default to min/max if not set or invalid
+        current_range = st.session_state.get(f'{filter_col}_range', (min_val, max_val))
+        # Ensure current_range is within bounds
+        current_range = (max(min_val, current_range[0]), min(max_val, current_range[1]))
+
+        selected_range = st.sidebar.slider(
+            f"Select range for {filter_col}:",
+            min_value=min_val,
+            max_value=max_val,
+            value=current_range,
+            key=f'{filter_col}_slider'
+        )
+        st.session_state[f'{filter_col}_range'] = selected_range
+    else:
+        st.sidebar.warning(f"Could not determine a valid range for {filter_col}. Filtering disabled.")
+        filter_col = None # Disable filtering if range is invalid
+# --- End Dynamic Range Filter --- #
+
+# --- Parameter Weights --- #
 params_weights = {}
 if selected_params:
     st.sidebar.subheader("Parameter Weights")
@@ -377,7 +475,8 @@ if selected_params:
     weight_sliders = {}
     for param in selected_params:
         direction_indicator = f" ({params_direction.get(param, 'neutral')})"
-        default_weight = DEFAULT_PARAMS_WEIGHTS.get(param, 50)
+        # Get default weight, ensure it's within 0-100
+        default_weight = max(0, min(100, DEFAULT_PARAMS_WEIGHTS.get(param, 50)))
         weight = st.sidebar.slider(f"Weight for {param}{direction_indicator}", 0, 100, default_weight, key=f"weight_{param}")
         weight_sliders[param] = weight
         total_weight_input += weight
@@ -396,9 +495,10 @@ if selected_params:
 else:
     st.sidebar.warning("Select at least one parameter.")
 
+# --- Top N Selection --- #
 top_n = st.sidebar.number_input("Select Top N Stocks to Display:", min_value=1, max_value=len(df_raw), value=min(10, len(df_raw)))
 
-# --- Main Area --- #
+# --- Main Area Processing --- #
 if selected_params and sum(params_weights.values()) > 0:
     # Filter out non-numeric columns from selected_params BEFORE preprocessing
     numeric_selected_params = [p for p in selected_params if p in df_raw.columns and pd.api.types.is_numeric_dtype(df_raw[p])]
@@ -409,7 +509,23 @@ if selected_params and sum(params_weights.values()) > 0:
          skipped_params = [p for p in selected_params if p not in numeric_selected_params]
          st.warning(f"Skipping non-numeric parameters: {', '.join(skipped_params)}")
 
-    df_processed, preprocess_warnings_list = preprocess_data(df_raw, numeric_selected_params)
+    # Apply dynamic range filter if active
+    df_filtered = df_raw.copy()
+    if filter_col and f'{filter_col}_range' in st.session_state:
+        min_select, max_select = st.session_state[f'{filter_col}_range']
+        # Ensure filtering happens correctly even with NaNs
+        # Make sure filter_col is numeric before attempting filter
+        if pd.api.types.is_numeric_dtype(df_filtered[filter_col]):
+            df_filtered = df_filtered[df_filtered[filter_col].between(min_select, max_select, inclusive='both')]
+            st.info(f"Filtered data based on {filter_col} range: {min_select:.2f} - {max_select:.2f}. Showing {len(df_filtered)} companies.")
+            if df_filtered.empty:
+                st.warning("No companies match the selected filter range.")
+                st.stop()
+        else:
+             st.warning(f"Filter column '{filter_col}' is not numeric. Cannot apply filter.")
+
+    # Preprocess the potentially filtered data
+    df_processed, preprocess_warnings_list = preprocess_data(df_filtered, numeric_selected_params)
 
     # --- Display Missing Value Warnings Table --- #
     if preprocess_warnings_list:
@@ -427,6 +543,10 @@ if selected_params and sum(params_weights.values()) > 0:
         st.markdown(f"Based on selected parameters and weights. Score ranges from 0 to 1 (higher is better).")
 
         cols_to_display = [col for col in ["Rank", "Name", "Composite Score"] + numeric_selected_params if col in df_ranked.columns]
+        # Ensure filter_col is displayed if it was used
+        if filter_col and filter_col not in cols_to_display:
+            cols_to_display.insert(3, filter_col)
+
         df_display = df_ranked.head(top_n)[cols_to_display]
         format_dict = {col: '{:.2f}' for col in df_display.select_dtypes(include=np.number).columns}
         format_dict['Rank'] = '{:d}'
@@ -459,9 +579,12 @@ if selected_params and sum(params_weights.values()) > 0:
             breakdown_cols_raw = {param: param for param in numeric_selected_params}
             breakdown_cols_norm = {norm_col: f"{param} (Norm)" for param, norm_col in normalized_params_cols.items() if param in numeric_selected_params}
             breakdown_cols_display = ['Rank', 'Name', 'Composite Score'] + list(breakdown_cols_raw.keys()) + list(breakdown_cols_norm.keys())
+            # Add filter col if used
+            if filter_col and filter_col not in breakdown_cols_display:
+                 breakdown_cols_display.insert(3, filter_col)
             breakdown_cols_display = [col for col in breakdown_cols_display if col in df_ranked.columns]
             df_breakdown = df_ranked.head(top_n)[breakdown_cols_display].rename(columns=breakdown_cols_norm)
-            format_dict_breakdown = {col: '{:.2f}' for col in df_breakdown.columns if '(Norm)' in col or col in numeric_selected_params}
+            format_dict_breakdown = {col: '{:.2f}' for col in df_breakdown.columns if '(Norm)' in col or col in numeric_selected_params or col == filter_col}
             format_dict_breakdown['Rank'] = '{:d}'
             format_dict_breakdown['Composite Score'] = '{:.3f}'
             st.dataframe(df_breakdown.style.format(format_dict_breakdown, na_rep='-'))
@@ -502,6 +625,7 @@ if selected_params and sum(params_weights.values()) > 0:
 
         # --- Data Summary --- #
         st.header("Data Summary")
+        # Generate summary based on the *original* raw data before filtering
         summary_text = generate_data_summary(df_raw)
         st.markdown(summary_text)
 
@@ -515,19 +639,23 @@ if selected_params and sum(params_weights.values()) > 0:
             try:
                 norm_cols_exist = [col for col in normalized_params_cols.values() if col in df_ranked.columns]
                 display_cols_processed = [col for col in ["Rank", "Name", "Composite Score"] + numeric_selected_params + norm_cols_exist if col in df_ranked.columns]
+                # Add filter col if used
+                if filter_col and filter_col not in display_cols_processed:
+                    display_cols_processed.insert(3, filter_col)
                 df_processed_display = df_ranked[display_cols_processed]
                 format_dict_processed = {col: '{:.3f}' for col in df_processed_display.select_dtypes(include=np.number).columns if col != 'Rank'}
                 format_dict_processed['Rank'] = '{:d}'
                 st.dataframe(df_processed_display.style.format(format_dict_processed, na_rep='-'))
             except Exception as e:
                 st.error(f"Error displaying processed data table: {e}")
-                if 'display_cols_processed' in locals() and all(col in df_ranked.columns for col in display_cols_processed):
-                     st.dataframe(df_ranked[display_cols_processed])
-                else:
-                     st.warning("Could not display processed data.")
+                # Fallback display attempt
+                try:
+                    st.dataframe(df_ranked)
+                except Exception:
+                    st.warning("Could not display processed data.")
 
     else:
-        st.warning("No data remaining after preprocessing.")
+        st.warning("No data remaining after preprocessing or filtering.")
 else:
     st.info("Configure analysis parameters in the sidebar.")
 
