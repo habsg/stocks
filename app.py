@@ -449,17 +449,17 @@ if filter_col:
     # Ensure min/max are valid before creating slider
     if pd.notna(min_val_raw) and pd.notna(max_val_raw) and min_val_raw <= max_val_raw:
         # Round min down and max up to nearest 100 for slider steps
-        min_val_slider = max(0.0, np.floor(min_val_raw / 100.0) * 100.0)
-        max_val_slider = np.ceil(max_val_raw / 100.0) * 100.0
+        min_val_slider = max(0.0, np.floor(min_val_raw / 1000.0) * 1000.0)
+        max_val_slider = np.ceil(max_val_raw / 1000.0) * 1000.0
         if max_val_slider <= min_val_slider: # Handle cases where max rounds down below min
-            max_val_slider = min_val_slider + 100.0
+            max_val_slider = min_val_slider + 1000.0
 
         # Get the stored range, default to rounded min/max if not set or invalid
         current_range_raw = st.session_state.get(f'{filter_col}_range', (min_val_slider, max_val_slider))
-        # Round current range to nearest 100 and ensure bounds
+        # Round current range to nearest 1000 and ensure bounds
         current_range_slider = (
-            max(min_val_slider, round(current_range_raw[0] / 100.0) * 100.0),
-            min(max_val_slider, round(current_range_raw[1] / 100.0) * 100.0)
+            max(min_val_slider, round(current_range_raw[0] / 1000.0) * 1000.0),
+            min(max_val_slider, round(current_range_raw[1] / 1000.0) * 1000.0)
         )
 
         selected_range = st.sidebar.slider(
@@ -467,7 +467,7 @@ if filter_col:
             min_value=float(min_val_slider),
             max_value=float(max_val_slider),
             value=(float(current_range_slider[0]), float(current_range_slider[1])),
-            step=100.0, # Step by 100
+            step=1000.0, # Step by 1000
             format="%.0f Cr", # Display as integer Cr
             key=f'{filter_col}_slider'
         )
