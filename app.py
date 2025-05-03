@@ -6,7 +6,8 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import io
-import dataframe_image as dfi # Added for image export
+import re
+import dataframe_image as dfi
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="Mutual Funds Guide - Stock Analyzer", page_icon="📊")
@@ -15,65 +16,75 @@ st.set_page_config(layout="wide", page_title="Mutual Funds Guide - Stock Analyze
 st.title("Mutual Funds Guide")
 st.caption("Created by Akhilesh Gururani ( akhilesh.gururani@gmail.com)")
 st.header("📊 Customizable Stock Analyzer")
-st.markdown("Upload your stock data (CSV or Excel) and rank stocks based on selected financial parameters and weights.")
+st.markdown("Upload your stock data (CSV or Excel). The app will suggest default parameters and weights, which you can customize to rank stocks.")
 
+# --- Constants & Defaults --- #
+ESSENTIAL_COLUMNS = ["Name"] # Must be present
+DEFAULT_PARAMS_WEIGHTS = {
+    # Higher is Better
+    "Return on equity": 15,
+    "Profit growth 3Years": 10,
+    "Sales growth 3Years": 10,
+    "OPM": 10, # Operating Profit Margin
+    "Return on capital employed": 10,
+    "Return on assets": 5,
+    "Free cash flow last year": 5,
+    # Lower is Better
+    "Price to Earning": 10,
+    "Price to book value": 10,
+    "Debt to equity": 10,
+    "Debt": 5,
+} # Sum = 100
 
-# Define essential columns needed for the core analysis
-ESSENTIAL_COLUMNS = [ 'Name' ]
-
-# Define potential parameters and their 'ideal' direction
-AVAILABLE_PARAMS_CONFIG = {
-    'Price to Earning': 'lower',
-    'Price to book value': 'lower',
-    'Return on equity': 'higher',
-    'Debt to equity': 'lower',
-    'Sales growth 3Years': 'higher',
-    'Profit growth 3Years': 'higher',
-    'OPM': 'higher',
-    'Return on capital employed': 'higher',
-    'Return on assets': 'higher',
-    'Sustainable Growth Rate': 'higher',
-    'Free cash flow last year': 'higher',
-    'Market Capitalization': 'higher',
-    'Current Price': 'neutral',
-    'Debt': 'lower',
-    'Graham': 'lower',
-    'Profit after tax': 'higher',
-    'Sales latest quarter': 'higher',
-    'Equity capital': 'neutral',
-    'Working capital': 'neutral',
-    'Free cash flow preceding year': 'higher'
+TERM_DEFINITIONS = {
+    "Return on equity": "(ROE) Measures a corporation's profitability in relation to shareholders’ equity. Higher is generally better.",
+    "Profit growth 3Years": "The compound annual growth rate (CAGR) of profit over the last 3 years. Higher indicates strong growth.",
+    "Sales growth 3Years": "The compound annual growth rate (CAGR) of sales over the last 3 years. Higher indicates strong revenue growth.",
+    "OPM": "(Operating Profit Margin) Measures how much profit a company makes on a dollar of sales, after paying for variable costs of production, but before paying interest or tax. Higher is better.",
+    "Return on capital employed": "(ROCE) Measures a company's profitability and the efficiency with which its capital is employed. Higher is better.",
+    "Return on assets": "(ROA) Indicates how profitable a company is relative to its total assets. Higher is better.",
+    "Free cash flow last year": "(FCF) The cash a company produces after accounting for cash outflows to support operations and maintain its capital assets. Higher is generally better.",
+    "Price to Earning": "(P/E Ratio) The ratio of a company's share price to the company's earnings per share. Lower can indicate undervaluation, but context is important.",
+    "Price to book value": "(P/B Ratio) Compares a company's market capitalization to its book value. Lower can indicate undervaluation.",
+    "Debt to equity": "(D/E Ratio) Measures a company's financial leverage, calculated by dividing its total liabilities by its stockholders' equity. Lower generally indicates less risk.",
+    "Debt": "Total amount of debt held by the company. Lower is generally preferred.",
+    # Add more definitions as needed
 }
 
-# --- Helper Function for Image Export --- #
+# --- Helper Functions --- #
+
+def infer_direction(col_name):
+    """Infers if higher or lower is better based on column name keywords."""
+    name_lower = col_name.lower()
+    if any(keyword in name_lower for keyword in ["debt", "ratio", "price to", "p/e", "p/b"]):
+        return "lower"
+    if any(keyword in name_lower for keyword in ["growth", "return", "margin", "profit", "sales", "flow", "opm", "roe", "roa", "roce"]):
+        return "higher"
+    return "neutral" # Default if unsure
+
 def convert_df_to_image(df_styled):
     """Converts a styled DataFrame to PNG image bytes."""
     try:
         img_buf = io.BytesIO()
-        # Explicitly tell dfi where to find chrome if needed, though often it finds it automatically if installed.
-        # You might need to configure this path in Streamlit Cloud if possible.
-        # dfi.export(df_styled, img_buf, table_conversion='chrome', chrome_path='/path/to/chrome/executable')
-        dfi.export(df_styled, img_buf, table_conversion='chrome')
+        dfi.export(df_styled, img_buf, table_conversion=\'chrome\')
         img_buf.seek(0)
         return img_buf.getvalue()
     except FileNotFoundError:
-        st.error("Image Generation Failed: Chrome executable not found. Please ensure Chrome or Chromium is installed and accessible in the environment's PATH.")
+        st.error("Image Generation Failed: Chrome executable not found. Ensure Chrome/Chromium is installed and accessible.")
         return None
     except Exception as e:
         st.error(f"Failed to generate image: {e}")
         return None
 
-# --- Helper Function for Rank Explanation --- #
-def generate_rank_explanation(rank1_stock, selected_params, params_weights, params_direction, normalized_params_cols):
-    """Generates a simple explanation for the top-ranked stock."""
+def generate_rank_explanation(rank1_stock, rank2_stock, selected_params, params_weights, params_direction, normalized_params_cols):
+    """Generates a more detailed explanation for the top-ranked stock, comparing with Rank #2."""
     if rank1_stock is None or rank1_stock.empty:
         return "No data available for the top-ranked stock."
 
-    stock_name = rank1_stock['Name'].iloc[0]
-    explanation = f"**Why is {stock_name} ranked #1?**\n\n"
-    explanation += f"{stock_name} achieved the highest Composite Score based on the selected parameters and weights. Here's a breakdown:\n\n"
+    stock_name = rank1_stock["Name"].iloc[0]
+    explanation = f"**Analysis for Rank #1: {stock_name}**\n\n"
+    explanation += f"{stock_name} achieved the highest Composite Score based on the selected parameters and weights. Here's a breakdown of the key factors:\n\n"
 
-    # Sort parameters by their contribution to the score (weight * normalized_score)
     contributions = {}
     total_weight = sum(params_weights.values())
     if total_weight <= 0: return "Weights are zero, cannot determine ranking factors."
@@ -89,82 +100,121 @@ def generate_rank_explanation(rank1_stock, selected_params, params_weights, para
     sorted_contributions = sorted(contributions.items(), key=lambda item: item[1], reverse=True)
 
     explanation += "**Key Contributing Factors (Strongest First):**\n"
-    for param, contribution in sorted_contributions:
-        raw_value = rank1_stock[param].iloc[0]
-        direction = params_direction.get(param, 'higher')
-        weight_perc = (params_weights.get(param, 0) / total_weight) * 100
+    rank2_name = rank2_stock["Name"].iloc[0] if rank2_stock is not None and not rank2_stock.empty else "N/A"
 
-        # Simple qualitative description based on direction
+    for i, (param, contribution) in enumerate(sorted_contributions):
+        if i >= 5 and contribution < 0.01: # Limit to top factors or those with meaningful contribution
+            break
+
+        raw_value = rank1_stock[param].iloc[0]
+        direction = params_direction.get(param, "higher")
+        weight_perc = (params_weights.get(param, 0) / total_weight) * 100
+        term_def = TERM_DEFINITIONS.get(param, "")
+
         performance_desc = ""
-        if direction == 'higher':
-            performance_desc = f"performed well with a value of {raw_value:.2f}"
-        elif direction == 'lower':
-            performance_desc = f"performed well with a low value of {raw_value:.2f}"
+        if direction == "higher":
+            performance_desc = f"scored well with a high value of **{raw_value:.2f}**"
+        elif direction == "lower":
+            performance_desc = f"scored well with a low value of **{raw_value:.2f}**"
         else:
              performance_desc = f"had a value of {raw_value:.2f}"
 
-        explanation += f"- **{param}**: {performance_desc}, contributing significantly due to its assigned weight ({weight_perc:.1f}%).\n"
+        explanation += f"- **{param}**: {performance_desc}. "
+        if term_def:
+            explanation += f"*(Definition: {term_def})* "
+        explanation += f"This factor had a weight of {weight_perc:.1f}%.\n"
 
-    explanation += f"\n*Note: This is a simplified explanation based on normalized scores and weights. The actual Composite Score is a weighted average of normalized values (0-1 scale) for all selected parameters.*"
+        # Comparison with Rank #2
+        if rank2_stock is not None and not rank2_stock.empty and param in rank2_stock.columns:
+            rank2_value = rank2_stock[param].iloc[0]
+            comparison = ""
+            if direction == "higher":
+                if raw_value > rank2_value:
+                    comparison = f"better than Rank #2 ({rank2_name}: {rank2_value:.2f})"
+                elif raw_value < rank2_value:
+                    comparison = f"lower than Rank #2 ({rank2_name}: {rank2_value:.2f})"
+                else:
+                    comparison = f"equal to Rank #2 ({rank2_name}: {rank2_value:.2f})"
+            elif direction == "lower":
+                 if raw_value < rank2_value:
+                    comparison = f"better than Rank #2 ({rank2_name}: {rank2_value:.2f})"
+                 elif raw_value > rank2_value:
+                    comparison = f"higher than Rank #2 ({rank2_name}: {rank2_value:.2f})"
+                 else:
+                    comparison = f"equal to Rank #2 ({rank2_name}: {rank2_value:.2f})"
+            if comparison:
+                 explanation += f"    - *Comparison:* This was {comparison}.\n"
+        explanation += "\n"
+
+    explanation += f"\n*Note: The Composite Score is a weighted average of normalized values (0-1 scale) for all selected parameters. This explanation highlights the most influential factors.*"
     return explanation
 
 # --- Data Loading and Validation ---
 @st.cache_data
 def load_data(uploaded_file):
-    """Loads data from uploaded file (CSV or Excel), handling potential errors."""
-    if uploaded_file is None:
-        return None, "Please upload a data file."
+    """Loads data, identifies numeric columns, handles essential checks."""
+    if uploaded_file is None: return None, "Please upload a data file.", []
     try:
-        if uploaded_file.name.endswith('.csv'):
+        if uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith(('.xls', '.xlsx')):
+        elif uploaded_file.name.endswith((".xls", ".xlsx")):
             df = pd.read_excel(uploaded_file)
         else:
-            return None, "Unsupported file format. Please upload a CSV or Excel file."
+            return None, "Unsupported file format.", []
 
-        missing_essential_cols = [col for col in ESSENTIAL_COLUMNS if col not in df.columns]
-        if missing_essential_cols:
-            return None, f"Error: Missing essential columns: {', '.join(missing_essential_cols)}."
+        missing_essential = [col for col in ESSENTIAL_COLUMNS if col not in df.columns]
+        if missing_essential:
+            return None, f"Error: Missing essential columns: {', '.join(missing_essential)}.", []
 
-        if "Name" in df.columns:
-            df.dropna(subset=["Name"], inplace=True)
-        else:
-             return None, "Critical Error: 'Name' column not found."
+        if "Name" in df.columns: df.dropna(subset=["Name"], inplace=True)
+        else: return None, "Critical Error: 'Name' column not found.", []
 
-        potential_numeric_cols = list(AVAILABLE_PARAMS_CONFIG.keys()) + [
-             'Market Capitalization', 'Current Price', 'Debt', 'Graham',
-             'Profit after tax', 'Sales latest quarter', 'Equity capital',
-             'Working capital', 'Free cash flow preceding year'
-             ]
-        for col in potential_numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df, None
+        # Convert potential numeric columns AFTER identifying them
+        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        # Also try to convert object columns that might be numeric
+        for col in df.select_dtypes(include=["object"]).columns:
+             try:
+                 converted_col = pd.to_numeric(df[col], errors=\'coerce\')
+                 # If conversion resulted in *some* numbers (not all NaN)
+                 if not converted_col.isnull().all():
+                     df[col] = converted_col
+                     if col not in numeric_cols:
+                         numeric_cols.append(col)
+             except Exception:
+                 continue # Ignore columns that fail conversion
+
+        # Re-identify numeric columns after potential conversions
+        final_numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+
+        return df, None, final_numeric_cols
     except Exception as e:
-        return None, f"Error processing file: {e}"
+        return None, f"Error processing file: {e}", []
 
 # --- Data Preprocessing --- #
 def preprocess_data(df, selected_params):
-    """Handles missing values for selected parameters by filling with 0."""
+    """Handles missing values by filling with 0."""
     df_processed = df.copy()
     warnings = []
     for param in selected_params:
+        if param not in df_processed.columns:
+             warnings.append(f"Warning: Parameter 	'{param}	' selected but not found in data during preprocessing.")
+             continue
         if df_processed[param].isnull().any():
             num_missing = df_processed[param].isnull().sum()
             df_processed[param].fillna(0, inplace=True)
-            warnings.append(f"Missing values ({num_missing}) found in '{param}'. Filled with 0.")
+            warnings.append(f"Missing values ({num_missing}) found in 	'{param}	'. Filled with 0.")
     return df_processed, warnings
 
 # --- Scoring Logic --- #
 def calculate_scores(df, params_weights, params_direction):
-    """Calculates normalized scores based on selected parameters and weights."""
+    """Calculates normalized scores."""
     df_scored = df.copy()
-    df_scored['Composite Score'] = 0
+    df_scored["Composite Score"] = 0
     total_weight = sum(params_weights.values())
     if total_weight <= 0:
         st.warning("Total weight is zero. Scores cannot be calculated.")
-        df_scored['Composite Score'] = 0
-        df_scored['Rank'] = 1
+        df_scored["Composite Score"] = 0
+        df_scored["Rank"] = 1
         return df_scored, {}
 
     normalized_params_cols = {}
@@ -174,25 +224,26 @@ def calculate_scores(df, params_weights, params_direction):
 
         min_val = df_scored[param].min()
         max_val = df_scored[param].max()
-        direction = params_direction.get(param, 'higher')
-        norm_col_name = f'{param}_norm'
+        direction = params_direction.get(param, "higher")
+        norm_col_name = f"{param}_norm"
         normalized_params_cols[param] = norm_col_name
 
         if max_val == min_val:
             df_scored[norm_col_name] = 0.5
         else:
-            if direction == 'higher':
+            if direction == "higher":
                 df_scored[norm_col_name] = (df_scored[param] - min_val) / (max_val - min_val)
-            elif direction == 'lower':
+            elif direction == "lower":
                 df_scored[norm_col_name] = (max_val - df_scored[param]) / (max_val - min_val)
             else:
                  df_scored[norm_col_name] = 0.5
 
         normalized_weight = weight / total_weight
-        df_scored['Composite Score'] += df_scored[norm_col_name] * normalized_weight
+        # Ensure score is not NaN before adding
+        df_scored["Composite Score"] += df_scored[norm_col_name].fillna(0) * normalized_weight
 
-    df_scored['Rank'] = df_scored['Composite Score'].rank(ascending=False, method='min').astype(int)
-    df_scored.sort_values('Rank', inplace=True)
+    df_scored["Rank"] = df_scored["Composite Score"].rank(ascending=False, method="min").astype(int)
+    df_scored.sort_values("Rank", inplace=True)
     return df_scored, normalized_params_cols
 
 # --- Main App Logic ---
@@ -202,9 +253,10 @@ uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xls
 
 df_raw = None
 error_message = None
+all_numeric_cols = []
 
 if uploaded_file is not None:
-    df_raw, error_message = load_data(uploaded_file)
+    df_raw, error_message, all_numeric_cols = load_data(uploaded_file)
 
 if error_message:
     st.error(error_message)
@@ -217,30 +269,62 @@ st.success(f"Successfully loaded data from '{uploaded_file.name}' with {df_raw.s
 
 # --- Sidebar Configuration --- #
 st.sidebar.header("⚙️ Analysis Configuration")
-valid_numeric_cols_in_df = [col for col in AVAILABLE_PARAMS_CONFIG if col in df_raw.columns and pd.api.types.is_numeric_dtype(df_raw[col])]
-missing_potential_params = [col for col in AVAILABLE_PARAMS_CONFIG if col not in df_raw.columns]
-if missing_potential_params:
-    st.sidebar.warning(f"Note: Potential parameters not found: {', '.join(missing_potential_params)}")
-if not valid_numeric_cols_in_df:
-    st.error("No valid numeric parameters found for analysis.")
+
+if not all_numeric_cols:
+    st.error("No numeric columns detected in the uploaded file for analysis.")
     st.stop()
+
+# Infer directions for all numeric columns
+params_direction = {col: infer_direction(col) for col in all_numeric_cols}
+
+# Determine default selection based on available columns
+default_params_available = [p for p in DEFAULT_PARAMS_WEIGHTS if p in all_numeric_cols]
+
+# Use session state to track if defaults have been applied
+if 'defaults_applied' not in st.session_state:
+    st.session_state.defaults_applied = False
+if 'selected_params' not in st.session_state:
+     st.session_state.selected_params = default_params_available
+
+# Only apply defaults on the very first run after upload
+if not st.session_state.defaults_applied:
+     current_selection = default_params_available
+     st.session_state.defaults_applied = True # Mark defaults as applied
+else:
+     current_selection = st.session_state.selected_params
 
 selected_params = st.sidebar.multiselect(
     "Select Parameters for Analysis:",
-    options=valid_numeric_cols_in_df,
-    default=valid_numeric_cols_in_df[:min(len(valid_numeric_cols_in_df), 4)]
+    options=all_numeric_cols,
+    default=current_selection,
+    key="param_selector" # Use key to help manage state
 )
+st.session_state.selected_params = selected_params # Update state
+
+# Allow overriding inferred directions (Optional - Advanced)
+# with st.sidebar.expander("Override Parameter Directions (Advanced)"):
+#     edited_directions = st.data_editor(
+#         pd.DataFrame({"Parameter": selected_params, "Direction (higher/lower/neutral)": [params_direction.get(p, "neutral") for p in selected_params]}),
+#         num_rows="dynamic"
+#     )
+#     # Update params_direction based on edits if needed
 
 params_weights = {}
 if selected_params:
     st.sidebar.subheader("Parameter Weights")
     normalize_weights = st.sidebar.checkbox("Normalize weights to sum to 100?", True)
     total_weight_input = 0
+    # Use columns for layout
+    weight_sliders = {}
     for param in selected_params:
-        direction_indicator = f" ({AVAILABLE_PARAMS_CONFIG.get(param, 'neutral')})"
-        weight = st.sidebar.slider(f"Weight for {param}{direction_indicator}", 0, 100, 50)
-        params_weights[param] = weight
+        direction_indicator = f" ({params_direction.get(param, 'neutral')})"
+        # Get default weight if parameter is in the default list
+        default_weight = DEFAULT_PARAMS_WEIGHTS.get(param, 50)
+        weight = st.sidebar.slider(f"Weight for {param}{direction_indicator}", 0, 100, default_weight, key=f"weight_{param}")
+        weight_sliders[param] = weight
         total_weight_input += weight
+
+    params_weights = weight_sliders # Assign weights from sliders
 
     if normalize_weights and total_weight_input > 0 and total_weight_input != 100:
         st.sidebar.info(f"Normalizing weights from {total_weight_input} to 100.")
@@ -264,7 +348,7 @@ if selected_params and sum(params_weights.values()) > 0:
             st.warning(warning)
 
     if not df_processed.empty:
-        df_ranked, normalized_params_cols = calculate_scores(df_processed, params_weights, AVAILABLE_PARAMS_CONFIG)
+        df_ranked, normalized_params_cols = calculate_scores(df_processed, params_weights, params_direction)
 
         st.header(f"🏆 Top {top_n} Ranked Stocks")
         st.markdown(f"Based on selected parameters and weights. Score ranges from 0 to 1 (higher is better).")
@@ -285,16 +369,15 @@ if selected_params and sum(params_weights.values()) > 0:
             image_data = convert_df_to_image(df_styled)
             if image_data:
                 col2.download_button(label="Download Table as Image", data=image_data, file_name=f'top_{top_n}_stocks_ranked.png', mime='image/png')
-            # else: # Error message is now handled inside convert_df_to_image
-            #     col2.warning("Image generation failed. Check logs/messages above.")
         except Exception as img_e:
-             col2.error(f"Error during image generation setup: {img_e}")
+             col2.error(f"Image generation setup error: {img_e}")
 
         # --- Rank 1 Explanation --- #
         st.subheader("Rank #1 Analysis")
         if not df_ranked.empty:
             rank1_data = df_ranked[df_ranked['Rank'] == 1]
-            explanation = generate_rank_explanation(rank1_data, selected_params, params_weights, AVAILABLE_PARAMS_CONFIG, normalized_params_cols)
+            rank2_data = df_ranked[df_ranked['Rank'] == 2] if len(df_ranked) > 1 else None
+            explanation = generate_rank_explanation(rank1_data, rank2_data, selected_params, params_weights, params_direction, normalized_params_cols)
             st.markdown(explanation)
         else:
             st.info("No stocks ranked.")
@@ -303,27 +386,21 @@ if selected_params and sum(params_weights.values()) > 0:
 
         # --- Dashboard --- #
         st.header("📊 Dashboard")
-        # Redesigned Tabs
         tab_breakdown, tab_scatter, tab_compare = st.tabs(["Top N Parameter Breakdown", "Scatter Analysis", "Top N Comparison"])
 
         with tab_breakdown:
             st.subheader(f"Parameter Details for Top {top_n} Stocks")
             st.markdown("Shows raw values and normalized scores (0-1) for the selected parameters.")
-            # Prepare breakdown table
             breakdown_cols_raw = {param: param for param in selected_params}
             breakdown_cols_norm = {norm_col: f"{param} (Norm)" for param, norm_col in normalized_params_cols.items() if param in selected_params}
             breakdown_cols_display = ['Rank', 'Name', 'Composite Score'] + list(breakdown_cols_raw.keys()) + list(breakdown_cols_norm.keys())
-            # Ensure columns exist
             breakdown_cols_display = [col for col in breakdown_cols_display if col in df_ranked.columns]
             df_breakdown = df_ranked.head(top_n)[breakdown_cols_display].rename(columns=breakdown_cols_norm)
-
-            # Formatting for breakdown table
             format_dict_breakdown = {col: '{:.2f}' for col in df_breakdown.columns if '(Norm)' in col or col in selected_params}
             format_dict_breakdown['Rank'] = '{:d}'
             format_dict_breakdown['Composite Score'] = '{:.3f}'
             st.dataframe(df_breakdown.style.format(format_dict_breakdown, na_rep='-'))
 
-        # Kept Scatter and Comparison Tabs
         with tab_scatter:
             st.subheader("Scatter Plot Analysis")
             if len(selected_params) >= 2:
