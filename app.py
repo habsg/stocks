@@ -65,9 +65,7 @@ def infer_direction(col_name):
 def convert_df_to_image(df_styled):
     """Converts a styled DataFrame to PNG image bytes."""
     try:
-        img_buf = io.BytesIO()
-        dfi.export(df_styled, img_buf, table_conversion=\'chrome\')
-        img_buf.seek(0)
+        img_buf = io.BytesIO()        dfi.export(df_styled, img_buf, table_conversion="chrome")        img_buf.seek(0)
         return img_buf.getvalue()
     except FileNotFoundError:
         st.error("Image Generation Failed: Chrome executable not found. Ensure Chrome/Chromium is installed and accessible.")
