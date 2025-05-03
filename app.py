@@ -79,9 +79,13 @@ def generate_rank_explanation(rank1_stock, df_all_ranked, selected_params, param
         weight = params_weights.get(param, 0)
         norm_col = normalized_params_cols.get(param)
         if norm_col and norm_col in rank1_stock.columns and weight > 0:
+            # Ensure the normalized score is not NaN before calculating contribution
             norm_score = rank1_stock[norm_col].iloc[0]
-            contribution = norm_score * (weight / total_weight)
-            contributions[param] = contribution
+            if pd.notna(norm_score):
+                contribution = norm_score * (weight / total_weight)
+                contributions[param] = contribution
+            else:
+                contributions[param] = 0 # Assign 0 contribution if score is NaN
 
     sorted_contributions = sorted(contributions.items(), key=lambda item: item[1], reverse=True)
 
@@ -97,7 +101,9 @@ def generate_rank_explanation(rank1_stock, df_all_ranked, selected_params, param
         term_def = TERM_DEFINITIONS.get(param, "")
 
         performance_desc = ""
-        if direction == "higher":
+        if pd.isna(raw_value):
+            performance_desc = "had missing data (treated as 0 for ranking)"
+        elif direction == "higher":
             performance_desc = f"scored well with a high value of **{raw_value:.2f}**"
         elif direction == "lower":
             performance_desc = f"scored well with a low value of **{raw_value:.2f}**"
@@ -110,12 +116,14 @@ def generate_rank_explanation(rank1_stock, df_all_ranked, selected_params, param
         explanation += f"This factor had a weight of {weight_perc:.1f}%.\n"
 
         # Comparison with Best Performer for this parameter
-        if param in df_all_ranked.columns:
+        if param in df_all_ranked.columns and pd.api.types.is_numeric_dtype(df_all_ranked[param]):
             best_performer_row = None
-            if direction == "higher":
-                best_performer_row = df_all_ranked.loc[df_all_ranked[param].idxmax()]
-            elif direction == "lower":
-                best_performer_row = df_all_ranked.loc[df_all_ranked[param].idxmin()]
+            df_param_valid = df_all_ranked.dropna(subset=[param]) # Consider only rows with valid data for this param
+            if not df_param_valid.empty:
+                if direction == "higher":
+                    best_performer_row = df_param_valid.loc[df_param_valid[param].idxmax()]
+                elif direction == "lower":
+                    best_performer_row = df_param_valid.loc[df_param_valid[param].idxmin()]
 
             if best_performer_row is not None:
                 best_value = best_performer_row[param]
@@ -140,47 +148,52 @@ def generate_data_summary(df):
     # Market Cap Analysis (if column exists)
     market_cap_col = next((col for col in df.columns if "market cap" in col.lower()), None)
     if market_cap_col:
-        df[market_cap_col] = pd.to_numeric(df[market_cap_col], errors='coerce')
-        df_cap = df.dropna(subset=[market_cap_col])
-        if not df_cap.empty:
-            summary += f"- **Market Capitalization ({market_cap_col}):**\n"
-            bins = [0, 100, 1000, 10000, np.inf]
-            labels = ["< 100 Cr", "100-1000 Cr", "1000-10000 Cr", "> 10000 Cr"]
-            # Assuming Market Cap is in Cr (common in Indian context, adjust if needed)
-            try:
-                cap_dist = pd.cut(df_cap[market_cap_col], bins=bins, labels=labels, right=False).value_counts().sort_index()
-                for label, count in cap_dist.items():
-                    summary += f"    - {label}: {count} companies\n"
-            except Exception as e:
-                 summary += f"    - Could not calculate distribution (Error: {e})\n"
-            avg_cap = df_cap[market_cap_col].mean()
-            median_cap = df_cap[market_cap_col].median()
-            summary += f"    - Average: {avg_cap:.2f} Cr\n"
-            summary += f"    - Median: {median_cap:.2f} Cr\n"
+        # Ensure column exists and is numeric before proceeding
+        if market_cap_col in df.columns and pd.api.types.is_numeric_dtype(df[market_cap_col]):
+            df_cap = df.dropna(subset=[market_cap_col])
+            if not df_cap.empty:
+                summary += f"- **Market Capitalization ({market_cap_col}):**\n"
+                bins = [0, 100, 1000, 10000, np.inf]
+                labels = ["< 100 Cr", "100-1000 Cr", "1000-10000 Cr", "> 10000 Cr"]
+                try:
+                    cap_dist = pd.cut(df_cap[market_cap_col], bins=bins, labels=labels, right=False).value_counts().sort_index()
+                    for label, count in cap_dist.items():
+                        summary += f"    - {label}: {count} companies\n"
+                except Exception as e:
+                     summary += f"    - Could not calculate distribution (Error: {e})\n"
+                avg_cap = df_cap[market_cap_col].mean()
+                median_cap = df_cap[market_cap_col].median()
+                summary += f"    - Average: {avg_cap:.2f} Cr\n"
+                summary += f"    - Median: {median_cap:.2f} Cr\n"
+        else:
+             summary += f"- **Market Capitalization ({market_cap_col}):** No valid data found.\n"
 
     # Exchange Listing Analysis (if column exists)
     exchange_col = next((col for col in df.columns if "exchange" in col.lower() or "listed on" in col.lower()), None)
     if exchange_col:
-        df[exchange_col] = df[exchange_col].astype(str).str.upper()
-        exchange_counts = df[exchange_col].value_counts()
-        if not exchange_counts.empty:
-            summary += f"- **Exchange Listing ({exchange_col}):**\n"
-            for ex, count in exchange_counts.items():
-                summary += f"    - {ex}: {count} companies\n"
+        if exchange_col in df.columns:
+            exchange_counts = df[exchange_col].astype(str).str.upper().value_counts()
+            if not exchange_counts.empty:
+                summary += f"- **Exchange Listing ({exchange_col}):**\n"
+                for ex, count in exchange_counts.items():
+                    summary += f"    - {ex}: {count} companies\n"
+            else:
+                 summary += f"- **Exchange Listing ({exchange_col}):** No valid data found.\n"
 
-    # Add more dynamic summaries based on common column names if needed
-    # e.g., Sector distribution
+    # Sector distribution
     sector_col = next((col for col in df.columns if "sector" in col.lower() or "industry" in col.lower()), None)
     if sector_col:
-        sector_counts = df[sector_col].value_counts()
-        if not sector_counts.empty:
-            summary += f"- **Sector/Industry ({sector_col}):**\n"
-            # Show top N sectors
-            top_n_sectors = 5
-            for sector, count in sector_counts.head(top_n_sectors).items():
-                 summary += f"    - {sector}: {count} companies\n"
-            if len(sector_counts) > top_n_sectors:
-                 summary += f"    - ... ({len(sector_counts) - top_n_sectors} other sectors)\n"
+        if sector_col in df.columns:
+            sector_counts = df[sector_col].value_counts()
+            if not sector_counts.empty:
+                summary += f"- **Sector/Industry ({sector_col}):**\n"
+                top_n_sectors = 5
+                for sector, count in sector_counts.head(top_n_sectors).items():
+                     summary += f"    - {sector}: {count} companies\n"
+                if len(sector_counts) > top_n_sectors:
+                     summary += f"    - ... ({len(sector_counts) - top_n_sectors} other sectors)\n"
+            else:
+                 summary += f"- **Sector/Industry ({sector_col}):** No valid data found.\n"
 
     return summary
 
@@ -204,11 +217,8 @@ def load_data(uploaded_file):
         if "Name" in df.columns: df.dropna(subset=["Name"], inplace=True)
         else: return None, "Critical Error: 'Name' column not found.", []
 
-        # Convert potential numeric columns AFTER identifying them
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-        # Also try to convert object columns that might be numeric
         for col in df.select_dtypes(include=["object"]).columns:
-             # Skip essential columns like 'Name'
              if col in ESSENTIAL_COLUMNS: continue
              try:
                  converted_col = pd.to_numeric(df[col], errors='coerce')
@@ -217,9 +227,8 @@ def load_data(uploaded_file):
                      if col not in numeric_cols:
                          numeric_cols.append(col)
              except Exception:
-                 continue # Ignore columns that fail conversion
+                 continue
 
-        # Re-identify numeric columns after potential conversions
         final_numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
 
         return df, None, final_numeric_cols
@@ -228,24 +237,23 @@ def load_data(uploaded_file):
 
 # --- Data Preprocessing --- #
 def preprocess_data(df, selected_params):
-    """Handles missing values by filling with 0."""
+    """Handles missing values by filling with 0. Returns warnings in a list of dicts."""
     df_processed = df.copy()
-    warnings = []
+    warnings_list = [] # Changed from simple list to list of dicts
     for param in selected_params:
         if param not in df_processed.columns:
-             warnings.append(f"Warning: Parameter '{param}' selected but not found in data during preprocessing.")
+             # This case should ideally be handled by checking selected_params against df columns earlier
              continue
-        # Ensure column is numeric before filling NaN
         if pd.api.types.is_numeric_dtype(df_processed[param]):
             if df_processed[param].isnull().any():
                 num_missing = df_processed[param].isnull().sum()
                 df_processed[param].fillna(0, inplace=True)
-                warnings.append(f"Missing values ({num_missing}) found in '{param}'. Filled with 0.")
-        else:
-             warnings.append(f"Warning: Parameter '{param}' is not numeric and cannot be used in calculations.")
-             # Optionally remove non-numeric selected params here
+                # Append dict for table display
+                warnings_list.append({"Parameter": param, "Missing Values": num_missing, "Action": "Filled with 0"})
+        # else: # Non-numeric columns are filtered out before scoring now
+            # warnings_list.append({"Parameter": param, "Missing Values": "N/A", "Action": "Skipped (Non-Numeric)"})
 
-    return df_processed, warnings
+    return df_processed, warnings_list
 
 # --- Scoring Logic --- #
 def calculate_scores(df, params_weights, params_direction):
@@ -262,7 +270,6 @@ def calculate_scores(df, params_weights, params_direction):
     normalized_params_cols = {}
     for param, weight in params_weights.items():
         if param not in df_scored.columns: continue
-        # Ensure column is numeric before proceeding
         if not pd.api.types.is_numeric_dtype(df_scored[param]): continue
         if weight == 0: continue
 
@@ -273,14 +280,14 @@ def calculate_scores(df, params_weights, params_direction):
         normalized_params_cols[param] = norm_col_name
 
         if max_val == min_val:
-            df_scored[norm_col_name] = 0.5
+            df_scored[norm_col_name] = 0.5 # Assign mid-score if all values are the same
         else:
             if direction == "higher":
                 df_scored[norm_col_name] = (df_scored[param] - min_val) / (max_val - min_val)
             elif direction == "lower":
                 df_scored[norm_col_name] = (max_val - df_scored[param]) / (max_val - min_val)
-            else:
-                 df_scored[norm_col_name] = 0.5
+            else: # neutral
+                 df_scored[norm_col_name] = 0.5 # Assign mid-score for neutral params
 
         normalized_weight = weight / total_weight
         df_scored["Composite Score"] += df_scored[norm_col_name].fillna(0) * normalized_weight
@@ -302,6 +309,8 @@ if uploaded_file is not None:
     if 'current_file_name' not in st.session_state or st.session_state.current_file_name != uploaded_file.name:
         st.session_state.defaults_applied = False
         st.session_state.current_file_name = uploaded_file.name
+        # Clear previous selections when new file uploaded
+        if 'selected_params' in st.session_state: del st.session_state['selected_params']
 
     df_raw, error_message, all_numeric_cols = load_data(uploaded_file)
 
@@ -325,12 +334,30 @@ params_direction = {col: infer_direction(col) for col in all_numeric_cols}
 default_params_available = [p for p in DEFAULT_PARAMS_WEIGHTS if p in all_numeric_cols]
 
 if 'defaults_applied' not in st.session_state: st.session_state.defaults_applied = False
-if 'selected_params' not in st.session_state: st.session_state.selected_params = default_params_available
+# Initialize selected_params in state if it doesn't exist, using defaults
+if 'selected_params' not in st.session_state:
+     st.session_state.selected_params = default_params_available
 
+# Apply defaults logic
 if not st.session_state.defaults_applied:
      current_selection = default_params_available
      st.session_state.selected_params = current_selection
      st.session_state.defaults_applied = True
+     # --- Display Default Suggestion Note --- #
+     if current_selection:
+         suggestion_note = "**Suggestion:** Based on your data, the following parameters have been pre-selected with default weights for analysis. You can customize the parameters and weights in the sidebar below.\n\n"
+         suggestion_note += "**Default Parameters & Weights:**\n"
+         default_weights_display = {p: w for p, w in DEFAULT_PARAMS_WEIGHTS.items() if p in current_selection}
+         # Normalize if needed for display consistency
+         total_default_weight = sum(default_weights_display.values())
+         if total_default_weight > 0 and total_default_weight != 100:
+              factor = 100 / total_default_weight
+              default_weights_display = {p: w * factor for p, w in default_weights_display.items()}
+
+         for param, weight in default_weights_display.items():
+             suggestion_note += f"- {param}: {weight:.1f}%\n"
+         st.info(suggestion_note)
+     # --- End Suggestion Note ---
 else:
      current_selection = st.session_state.selected_params if st.session_state.selected_params else default_params_available
 
@@ -373,18 +400,25 @@ top_n = st.sidebar.number_input("Select Top N Stocks to Display:", min_value=1, 
 
 # --- Main Area --- #
 if selected_params and sum(params_weights.values()) > 0:
-    df_processed, preprocess_warnings = preprocess_data(df_raw, selected_params)
-    if preprocess_warnings:
-        for warning in preprocess_warnings:
-            st.warning(warning)
-
-    # Filter out non-numeric columns from selected_params before scoring
-    numeric_selected_params = [p for p in selected_params if p in df_processed.columns and pd.api.types.is_numeric_dtype(df_processed[p])]
-    numeric_params_weights = {p: w for p, w in params_weights.items() if p in numeric_selected_params}
-
+    # Filter out non-numeric columns from selected_params BEFORE preprocessing
+    numeric_selected_params = [p for p in selected_params if p in df_raw.columns and pd.api.types.is_numeric_dtype(df_raw[p])]
     if not numeric_selected_params:
-         st.error("No valid numeric parameters selected for scoring.")
+         st.error("No valid numeric parameters selected for analysis.")
          st.stop()
+    if len(numeric_selected_params) < len(selected_params):
+         skipped_params = [p for p in selected_params if p not in numeric_selected_params]
+         st.warning(f"Skipping non-numeric parameters: {', '.join(skipped_params)}")
+
+    df_processed, preprocess_warnings_list = preprocess_data(df_raw, numeric_selected_params)
+
+    # --- Display Missing Value Warnings Table --- #
+    if preprocess_warnings_list:
+        st.subheader("Data Preprocessing Notes")
+        warnings_df = pd.DataFrame(preprocess_warnings_list)
+        st.table(warnings_df)
+    # --- End Warnings Table ---
+
+    numeric_params_weights = {p: w for p, w in params_weights.items() if p in numeric_selected_params}
 
     if not df_processed.empty:
         df_ranked, normalized_params_cols = calculate_scores(df_processed, numeric_params_weights, params_direction)
@@ -408,7 +442,6 @@ if selected_params and sum(params_weights.values()) > 0:
         st.subheader("Rank #1 Analysis")
         if not df_ranked.empty:
             rank1_data = df_ranked[df_ranked['Rank'] == 1]
-            # Pass the full ranked df for comparison
             explanation = generate_rank_explanation(rank1_data, df_ranked, numeric_selected_params, numeric_params_weights, params_direction, normalized_params_cols)
             st.markdown(explanation)
         else:
