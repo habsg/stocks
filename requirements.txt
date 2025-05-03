@@ -2,4 +2,5 @@ streamlit
 pandas
 numpy
 plotly
+openpyxl # Added for Excel file support
 
