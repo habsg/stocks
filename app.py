@@ -7,7 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import io
 import re
-import dataframe_image as dfi
+# Removed: import dataframe_image as dfi
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="Mutual Funds Guide - Stock Analyzer", page_icon="📊")
@@ -62,19 +62,7 @@ def infer_direction(col_name):
         return "higher"
     return "neutral" # Default if unsure
 
-def convert_df_to_image(df_styled):
-    """Converts a styled DataFrame to PNG image bytes."""
-    try:
-        img_buf = io.BytesIO()
-        dfi.export(df_styled, img_buf, table_conversion="chrome")
-        img_buf.seek(0)
-        return img_buf.getvalue()
-    except FileNotFoundError:
-        st.error("Image Generation Failed: Chrome executable not found. Ensure Chrome/Chromium is installed and accessible.")
-        return None
-    except Exception as e:
-        st.error(f"Failed to generate image: {e}")
-        return None
+# Removed convert_df_to_image function
 
 def generate_rank_explanation(rank1_stock, rank2_stock, selected_params, params_weights, params_direction, normalized_params_cols):
     """Generates a more detailed explanation for the top-ranked stock, comparing with Rank #2."""
@@ -164,7 +152,7 @@ def load_data(uploaded_file):
 
         missing_essential = [col for col in ESSENTIAL_COLUMNS if col not in df.columns]
         if missing_essential:
-            return None, f"Error: Missing essential columns: {', '.join(missing_essential)}.", []
+            return None, f"Error: Missing essential columns: {", ".join(missing_essential)}.", []
 
         if "Name" in df.columns: df.dropna(subset=["Name"], inplace=True)
         else: return None, "Critical Error: 'Name' column not found.", []
@@ -174,7 +162,8 @@ def load_data(uploaded_file):
         # Also try to convert object columns that might be numeric
         for col in df.select_dtypes(include=["object"]).columns:
              try:
-                 converted_col = pd.to_numeric(df[col], errors=\'coerce\')
+                 # Corrected syntax for errors='coerce'
+                 converted_col = pd.to_numeric(df[col], errors='coerce')
                  # If conversion resulted in *some* numbers (not all NaN)
                  if not converted_col.isnull().all():
                      df[col] = converted_col
@@ -197,12 +186,12 @@ def preprocess_data(df, selected_params):
     warnings = []
     for param in selected_params:
         if param not in df_processed.columns:
-             warnings.append(f"Warning: Parameter 	'{param}	' selected but not found in data during preprocessing.")
+             warnings.append(f"Warning: Parameter '{param}' selected but not found in data during preprocessing.")
              continue
         if df_processed[param].isnull().any():
             num_missing = df_processed[param].isnull().sum()
             df_processed[param].fillna(0, inplace=True)
-            warnings.append(f"Missing values ({num_missing}) found in 	'{param}	'. Filled with 0.")
+            warnings.append(f"Missing values ({num_missing}) found in '{param}'. Filled with 0.")
     return df_processed, warnings
 
 # --- Scoring Logic --- #
@@ -256,6 +245,11 @@ error_message = None
 all_numeric_cols = []
 
 if uploaded_file is not None:
+    # Reset defaults flag when a new file is uploaded
+    if 'current_file_name' not in st.session_state or st.session_state.current_file_name != uploaded_file.name:
+        st.session_state.defaults_applied = False
+        st.session_state.current_file_name = uploaded_file.name
+
     df_raw, error_message, all_numeric_cols = load_data(uploaded_file)
 
 if error_message:
@@ -289,9 +283,11 @@ if 'selected_params' not in st.session_state:
 # Only apply defaults on the very first run after upload
 if not st.session_state.defaults_applied:
      current_selection = default_params_available
+     st.session_state.selected_params = current_selection # Store the default selection
      st.session_state.defaults_applied = True # Mark defaults as applied
 else:
-     current_selection = st.session_state.selected_params
+     # If defaults were applied, use the current state unless it's empty
+     current_selection = st.session_state.selected_params if st.session_state.selected_params else default_params_available
 
 selected_params = st.sidebar.multiselect(
     "Select Parameters for Analysis:",
@@ -299,27 +295,19 @@ selected_params = st.sidebar.multiselect(
     default=current_selection,
     key="param_selector" # Use key to help manage state
 )
-st.session_state.selected_params = selected_params # Update state
-
-# Allow overriding inferred directions (Optional - Advanced)
-# with st.sidebar.expander("Override Parameter Directions (Advanced)"):
-#     edited_directions = st.data_editor(
-#         pd.DataFrame({"Parameter": selected_params, "Direction (higher/lower/neutral)": [params_direction.get(p, "neutral") for p in selected_params]}),
-#         num_rows="dynamic"
-#     )
-#     # Update params_direction based on edits if needed
+st.session_state.selected_params = selected_params # Update state with user's current selection
 
 params_weights = {}
 if selected_params:
     st.sidebar.subheader("Parameter Weights")
     normalize_weights = st.sidebar.checkbox("Normalize weights to sum to 100?", True)
     total_weight_input = 0
-    # Use columns for layout
     weight_sliders = {}
     for param in selected_params:
         direction_indicator = f" ({params_direction.get(param, 'neutral')})"
-        # Get default weight if parameter is in the default list
+        # Get default weight if parameter is in the default list, otherwise 50
         default_weight = DEFAULT_PARAMS_WEIGHTS.get(param, 50)
+        # Use session state to preserve slider values across runs if needed, or rely on default
         weight = st.sidebar.slider(f"Weight for {param}{direction_indicator}", 0, 100, default_weight, key=f"weight_{param}")
         weight_sliders[param] = weight
         total_weight_input += weight
@@ -361,16 +349,11 @@ if selected_params and sum(params_weights.values()) > 0:
         df_styled = df_display.style.format(format_dict, na_rep='-')
         st.dataframe(df_styled)
 
-        # --- Download Buttons --- #
-        col1, col2 = st.columns(2)
+        # --- Download Button (CSV Only) --- #
         csv_data = df_display.to_csv(index=False).encode('utf-8')
-        col1.download_button(label="Download Table as CSV", data=csv_data, file_name=f'top_{top_n}_stocks_ranked.csv', mime='text/csv')
-        try:
-            image_data = convert_df_to_image(df_styled)
-            if image_data:
-                col2.download_button(label="Download Table as Image", data=image_data, file_name=f'top_{top_n}_stocks_ranked.png', mime='image/png')
-        except Exception as img_e:
-             col2.error(f"Image generation setup error: {img_e}")
+        st.download_button(label="Download Table as CSV", data=csv_data, file_name=f'top_{top_n}_stocks_ranked.csv', mime='text/csv')
+
+        # Removed Image Download Button and related code
 
         # --- Rank 1 Explanation --- #
         st.subheader("Rank #1 Analysis")

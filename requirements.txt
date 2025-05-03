@@ -3,6 +3,5 @@ pandas
 numpy
 plotly
 openpyxl # For Excel file support
-dataframe_image # For image export
-matplotlib # Fallback/dependency for dataframe_image
+# Removed: dataframe_image, matplotlib
 
