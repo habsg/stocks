@@ -6,9 +6,17 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import io
+import dataframe_image as dfi # Added for image export
 
 # --- Configuration ---
-st.set_page_config(layout="wide", page_title="Stock Analyzer", page_icon="📊")
+st.set_page_config(layout="wide", page_title="MUTUA FUNDS GUIDE - Stock Analyzer", page_icon="📊")
+
+# --- Branding --- #
+st.title("MUTUA FUNDS GUIDE")
+st.caption("Created by Akhilesh Gururani ( akhilesh.gururani@gmail.com)")
+st.header("📊 Customizable Stock Analyzer")
+st.markdown("Upload your stock data (CSV or Excel) and rank stocks based on selected financial parameters and weights.")
+
 
 # Define essential columns needed for the core analysis
 # Adjust this list based on the absolute minimum columns required
@@ -40,6 +48,22 @@ AVAILABLE_PARAMS_CONFIG = {
     'Free cash flow preceding year': 'higher'
 }
 
+# --- Helper Function for Image Export --- #
+@st.cache_data # Cache the generated image bytes
+def convert_df_to_image(df_styled):
+    """Converts a styled DataFrame to PNG image bytes."""
+    try:
+        # Use BytesIO to store the image in memory
+        img_buf = io.BytesIO()
+        dfi.export(df_styled, img_buf, table_conversion='chrome') # Use chrome headless browser
+        img_buf.seek(0)
+        return img_buf.getvalue()
+    except Exception as e:
+        st.error(f"Failed to generate image: {e}")
+        # Check if Chrome/Chromium is installed and accessible in the environment
+        st.info("Ensure Chrome or Chromium is installed in the deployment environment for image export.")
+        return None
+
 # --- Data Loading and Validation ---
 @st.cache_data
 def load_data(uploaded_file):
@@ -64,7 +88,10 @@ def load_data(uploaded_file):
             return None, f"Error: The uploaded file is missing essential columns: {', '.join(missing_essential_cols)}. Cannot proceed."
 
         # --- Basic Cleaning & Type Conversion ---
-        df.dropna(subset=["Name"], inplace=True) # Drop rows where Name is missing
+        if "Name" in df.columns:
+            df.dropna(subset=["Name"], inplace=True) # Drop rows where Name is missing
+        else:
+             return None, "Critical Error: 'Name' column not found, cannot identify stocks."
 
         potential_numeric_cols = list(AVAILABLE_PARAMS_CONFIG.keys()) + [ # Include other potential numerics
              'Market Capitalization', 'Current Price', 'Debt', 'Graham',
@@ -82,10 +109,6 @@ def load_data(uploaded_file):
                 if df[col].dtype != original_dtype:
                     converted_cols.append(col)
 
-        # Report columns that couldn't be fully converted (still contain NaNs after coercion)
-        # Note: This doesn't guarantee they are *all* numeric, just that conversion was attempted.
-        # A stricter check might be needed depending on requirements.
-
         return df, None # Return dataframe and no error message
 
     except Exception as e:
@@ -101,17 +124,12 @@ def preprocess_data(df, selected_params):
         if df_processed[param].isnull().any():
             median_val = df_processed[param].median()
             if pd.isna(median_val):
-                 # If median is NaN (e.g., all values were NaN), fill with 0 or drop?
-                 # Filling with 0 might skew results, dropping might lose data.
-                 # Let's fill with 0 for now and warn.
                  df_processed[param].fillna(0, inplace=True)
-                 warnings.append(f"Column 	'{param}	' contained only missing values after conversion; filled with 0.")
+                 warnings.append(f"Column '{param}' contained only missing values after conversion; filled with 0.")
             else:
                 df_processed[param].fillna(median_val, inplace=True)
-                warnings.append(f"Missing values found in 	'{param}	'. Filled with median ({median_val:.2f}).")
+                warnings.append(f"Missing values found in '{param}'. Filled with median ({median_val:.2f}).")
 
-    # Drop rows where any selected parameter is still NaN (shouldn't happen with above fill)
-    # df_processed.dropna(subset=selected_params, inplace=True)
     return df_processed, warnings
 
 # --- Scoring Logic ---
@@ -123,7 +141,6 @@ def calculate_scores(df, params_weights, params_direction):
 
     if total_weight <= 0:
         st.warning("Total weight is zero or negative. Scores cannot be calculated.")
-        # Assign default score and rank if weights are zero
         df_scored['Composite Score'] = 0
         df_scored['Rank'] = 1
         return df_scored, {}
@@ -132,8 +149,7 @@ def calculate_scores(df, params_weights, params_direction):
 
     for param, weight in params_weights.items():
         if param not in df_scored.columns:
-            # This check should ideally be done earlier
-            st.error(f"Parameter 	'{param}	' not found in data during scoring.")
+            st.error(f"Parameter '{param}' not found in data during scoring.")
             continue
         if weight == 0:
              continue # Skip parameters with zero weight
@@ -142,37 +158,28 @@ def calculate_scores(df, params_weights, params_direction):
         min_val = df_scored[param].min()
         max_val = df_scored[param].max()
 
-        # Check for valid direction, default to 'higher'
         direction = params_direction.get(param, 'higher')
 
         if max_val == min_val:
-             # Avoid division by zero if all values are the same
-             # Assign 0.5 as a neutral score
             df_scored[f'{param}_norm'] = 0.5
         else:
             if direction == 'higher':
-                # Higher is better: (value - min) / (max - min)
                 df_scored[f'{param}_norm'] = (df_scored[param] - min_val) / (max_val - min_val)
             elif direction == 'lower':
-                # Lower is better: (max - value) / (max - min)
                 df_scored[f'{param}_norm'] = (max_val - df_scored[param]) / (max_val - min_val)
             else: # Neutral or unrecognized direction
-                 df_scored[f'{param}_norm'] = 0.5 # Assign neutral score
+                 df_scored[f'{param}_norm'] = 0.5
 
-        # Apply weight (normalized weight)
         normalized_weight = weight / total_weight
         df_scored['Composite Score'] += df_scored[f'{param}_norm'] * normalized_weight
         normalized_params_cols[param] = f'{param}_norm'
 
-    # Rank based on score
     df_scored['Rank'] = df_scored['Composite Score'].rank(ascending=False, method='min').astype(int)
     df_scored.sort_values('Rank', inplace=True)
 
     return df_scored, normalized_params_cols
 
 # --- Main App Logic ---
-st.title("📊 Customizable Stock Analyzer")
-st.markdown("Upload your stock data (CSV or Excel) and rank stocks based on selected financial parameters and weights.")
 
 # --- File Uploader --- #
 uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xls", "xlsx"])
@@ -186,7 +193,7 @@ if uploaded_file is not None:
 # --- Display based on Data Load Status --- #
 if error_message:
     st.error(error_message)
-    st.stop() # Stop execution if loading failed critically
+    st.stop()
 
 if df_raw is None:
     st.info("Please upload a data file to begin analysis.")
@@ -198,13 +205,11 @@ st.success(f"Successfully loaded data from '{uploaded_file.name}' with {df_raw.s
 # --- Sidebar Configuration --- #
 st.sidebar.header("⚙️ Analysis Configuration")
 
-# Filter available params to only those present and numeric in the *uploaded* data
 valid_numeric_cols_in_df = [col for col in AVAILABLE_PARAMS_CONFIG if col in df_raw.columns and pd.api.types.is_numeric_dtype(df_raw[col])]
 
-# Check for missing potential parameters
 missing_potential_params = [col for col in AVAILABLE_PARAMS_CONFIG if col not in df_raw.columns]
 if missing_potential_params:
-    st.sidebar.warning(f"Note: The following potential analysis parameters were not found in the uploaded file: {', '.join(missing_potential_params)}")
+    st.sidebar.warning(f"Note: The following potential analysis parameters were not found: {', '.join(missing_potential_params)}")
 
 if not valid_numeric_cols_in_df:
     st.error("No valid numeric parameters (from the predefined list) found for analysis in the uploaded data. Cannot proceed with ranking.")
@@ -213,7 +218,7 @@ if not valid_numeric_cols_in_df:
 selected_params = st.sidebar.multiselect(
     "Select Parameters for Analysis:",
     options=valid_numeric_cols_in_df,
-    default=valid_numeric_cols_in_df[:min(len(valid_numeric_cols_in_df), 4)] # Default to first 4 valid params
+    default=valid_numeric_cols_in_df[:min(len(valid_numeric_cols_in_df), 4)]
 )
 
 params_weights = {}
@@ -222,23 +227,20 @@ if selected_params:
     normalize_weights = st.sidebar.checkbox("Normalize weights to sum to 100?", True)
     total_weight_input = 0
     for param in selected_params:
-        # Use direction info in slider label
         direction_indicator = f" ({AVAILABLE_PARAMS_CONFIG.get(param, 'neutral')})"
         weight = st.sidebar.slider(f"Weight for {param}{direction_indicator}", 0, 100, 50)
         params_weights[param] = weight
         total_weight_input += weight
 
-    # Normalize weights if checkbox is ticked and total is not 100
     if normalize_weights and total_weight_input > 0 and total_weight_input != 100:
         st.sidebar.info(f"Normalizing weights from {total_weight_input} to 100.")
         factor = 100 / total_weight_input
         params_weights = {p: w * factor for p, w in params_weights.items()}
-        # Display normalized weights (read-only)
         st.sidebar.markdown("**Normalized Weights:**")
         for param, weight in params_weights.items():
             st.sidebar.markdown(f"- *{param}*: {weight:.1f}")
     elif total_weight_input <= 0:
-         st.sidebar.warning("All weights are zero or negative. Please assign positive weights to parameters for ranking.")
+         st.sidebar.warning("All weights are zero or negative. Assign positive weights for ranking.")
 
 else:
     st.sidebar.warning("Please select at least one parameter for analysis.")
@@ -247,22 +249,49 @@ top_n = st.sidebar.number_input("Select Top N Stocks to Display:", min_value=1, 
 
 # --- Main Area --- #
 if selected_params and sum(params_weights.values()) > 0:
-    # Preprocess data based on selected parameters
     df_processed, preprocess_warnings = preprocess_data(df_raw, selected_params)
     if preprocess_warnings:
         for warning in preprocess_warnings:
             st.warning(warning)
 
     if not df_processed.empty:
-        # Calculate scores
         df_ranked, normalized_params_cols = calculate_scores(df_processed, params_weights, AVAILABLE_PARAMS_CONFIG)
 
         st.header(f"🏆 Top {top_n} Ranked Stocks")
         st.markdown(f"Based on selected parameters and weights. Score ranges from 0 to 1 (higher is better).")
 
-        # Columns to display in the ranked table
+        # Define columns and formatting for the main results table
         cols_to_display = [col for col in ["Rank", "Name", "Composite Score"] + selected_params if col in df_ranked.columns]
-        st.dataframe(df_ranked.head(top_n)[cols_to_display].style.format({"Composite Score": "{:.3f}"}, na_rep='-'))
+        df_display = df_ranked.head(top_n)[cols_to_display]
+
+        # Apply 2-decimal formatting to all numeric columns in the display DataFrame
+        format_dict = {col: '{:.2f}' for col in df_display.select_dtypes(include=np.number).columns}
+        # Special format for Rank (integer) and Composite Score (3 decimals)
+        format_dict['Rank'] = '{:d}'
+        format_dict['Composite Score'] = '{:.3f}'
+
+        df_styled = df_display.style.format(format_dict, na_rep='-')
+        st.dataframe(df_styled)
+
+        # --- Download Buttons --- #
+        col1, col2 = st.columns(2)
+        # CSV Download
+        csv_data = df_display.to_csv(index=False).encode('utf-8')
+        col1.download_button(
+            label="Download Table as CSV",
+            data=csv_data,
+            file_name=f'top_{top_n}_stocks_ranked.csv',
+            mime='text/csv',
+        )
+        # Image Download
+        image_data = convert_df_to_image(df_styled)
+        if image_data:
+            col2.download_button(
+                label="Download Table as Image",
+                data=image_data,
+                file_name=f'top_{top_n}_stocks_ranked.png',
+                mime='image/png'
+            )
 
         st.divider()
 
@@ -276,62 +305,62 @@ if selected_params and sum(params_weights.values()) > 0:
                 fig_hist = px.histogram(df_ranked, x='Composite Score', nbins=20, title='Overall Score Distribution')
                 st.plotly_chart(fig_hist, use_container_width=True)
             else:
-                st.info("Composite Score not available for distribution plot.")
+                st.info("Composite Score not available.")
 
         with tab2:
             st.subheader("Correlation Between Selected Parameters")
             if len(selected_params) > 1:
-                # Ensure only numeric columns selected are used for correlation
                 numeric_selected_params = [p for p in selected_params if pd.api.types.is_numeric_dtype(df_processed[p])]
                 if len(numeric_selected_params) > 1:
                     corr = df_processed[numeric_selected_params].corr()
                     fig_corr = px.imshow(corr, text_auto=True, aspect="auto", title='Correlation Matrix')
                     st.plotly_chart(fig_corr, use_container_width=True)
                 else:
-                    st.info("Need at least two numeric parameters selected to calculate correlation.")
+                    st.info("Need at least two numeric parameters selected.")
             else:
-                st.info("Select at least two parameters to view correlation.")
+                st.info("Select at least two parameters.")
 
         with tab3:
             st.subheader("Scatter Plot Analysis")
             if len(selected_params) >= 2:
-                col1, col2 = st.columns(2)
-                x_axis = col1.selectbox("Select X-axis Parameter:", selected_params, index=0, key="scatter_x")
-                y_axis = col2.selectbox("Select Y-axis Parameter:", selected_params, index=1 if len(selected_params) > 1 else 0, key="scatter_y")
+                sc_col1, sc_col2 = st.columns(2)
+                x_axis = sc_col1.selectbox("Select X-axis Parameter:", selected_params, index=0, key="scatter_x")
+                y_axis = sc_col2.selectbox("Select Y-axis Parameter:", selected_params, index=1 if len(selected_params) > 1 else 0, key="scatter_y")
 
                 if x_axis != y_axis:
-                    # Ensure columns exist before plotting
-                    if x_axis in df_ranked.columns and y_axis in df_ranked.columns:
+                    if x_axis in df_ranked.columns and y_axis in df_ranked.columns and 'Name' in df_ranked.columns:
                         fig_scatter = px.scatter(
                             df_ranked.head(top_n),
                             x=x_axis,
                             y=y_axis,
-                            hover_name='Name',
+                            hover_name='Name', # Ensure 'Name' is used for hover
+                            text='Name', # Display Name on points if needed
                             title=f'{y_axis} vs. {x_axis} for Top {top_n} Stocks',
                             color='Composite Score' if 'Composite Score' in df_ranked.columns else None,
                             color_continuous_scale=px.colors.sequential.Viridis
                         )
+                        fig_scatter.update_traces(textposition='top center') # Adjust text position if using text=
                         st.plotly_chart(fig_scatter, use_container_width=True)
                     else:
-                        st.warning("Selected axis parameter not found in ranked data.")
+                        st.warning("Selected axis parameter or 'Name' column not found.")
                 else:
                     st.warning("Please select different parameters for X and Y axes.")
             else:
-                st.info("Select at least two parameters to view a scatter plot.")
+                st.info("Select at least two parameters.")
 
         with tab4:
             st.subheader(f"Comparison of Key Metric for Top {top_n} Stocks")
             if selected_params:
                 metric_to_compare = st.selectbox("Select Metric to Compare:", selected_params, key="bar_compare")
-                if metric_to_compare in df_ranked.columns:
-                    df_top_n = df_ranked.head(top_n)
-                    fig_bar = px.bar(df_top_n, x='Name', y=metric_to_compare, title=f'{metric_to_compare} for Top {top_n} Stocks	', text_auto=True)
+                if metric_to_compare in df_ranked.columns and 'Name' in df_ranked.columns:
+                    df_top_n_bar = df_ranked.head(top_n)
+                    fig_bar = px.bar(df_top_n_bar, x='Name', y=metric_to_compare, title=f'{metric_to_compare} for Top {top_n} Stocks', text_auto='.2f') # Format bar labels
                     fig_bar.update_layout(xaxis_title="Stock Name", yaxis_title=metric_to_compare)
                     st.plotly_chart(fig_bar, use_container_width=True)
                 else:
-                    st.warning("Selected metric not found in ranked data.")
+                    st.warning("Selected metric or 'Name' column not found.")
             else:
-                 st.info("Select parameters in the sidebar to compare.")
+                 st.info("Select parameters in the sidebar.")
 
         st.divider()
 
@@ -340,13 +369,24 @@ if selected_params and sum(params_weights.values()) > 0:
         with st.expander("View Uploaded Raw Data"):
             st.dataframe(df_raw)
         with st.expander("View Processed & Ranked Data (including normalized values)"):
-            # Ensure all columns exist before trying to display
-            norm_cols_exist = [col for col in normalized_params_cols.values() if col in df_ranked.columns]
-            display_cols_processed = [col for col in ["Rank", "Name", "Composite Score"] + selected_params + norm_cols_exist if col in df_ranked.columns]
-            st.dataframe(df_ranked[display_cols_processed].style.format({"Composite Score": "{:.3f}"}, formatter={col: "{:.3f}" for col in norm_cols_exist}, na_rep='-'))
+            try:
+                # Select only columns that actually exist in df_ranked
+                norm_cols_exist = [col for col in normalized_params_cols.values() if col in df_ranked.columns]
+                display_cols_processed = [col for col in ["Rank", "Name", "Composite Score"] + selected_params + norm_cols_exist if col in df_ranked.columns]
+
+                # Create format dictionary only for existing numeric columns in the selection
+                df_processed_display = df_ranked[display_cols_processed]
+                format_dict_processed = {col: '{:.3f}' for col in df_processed_display.select_dtypes(include=np.number).columns if col != 'Rank'}
+                format_dict_processed['Rank'] = '{:d}' # Ensure Rank is integer
+
+                st.dataframe(df_processed_display.style.format(format_dict_processed, na_rep='-'))
+            except Exception as e:
+                st.error(f"Error displaying processed data table: {e}")
+                st.info("There might be an issue with data types or formatting after processing.")
+                st.dataframe(df_ranked[display_cols_processed]) # Display without formatting as fallback
 
     else:
-        st.warning("No data remaining after preprocessing with selected parameters. Check data quality or parameter selection.")
+        st.warning("No data remaining after preprocessing. Check data quality or parameter selection.")
 else:
     st.info("Configure analysis parameters in the sidebar to see results.")
 

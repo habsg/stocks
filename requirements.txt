@@ -2,5 +2,7 @@ streamlit
 pandas
 numpy
 plotly
-openpyxl # Added for Excel file support
+openpyxl # For Excel file support
+dataframe_image # For image export
+matplotlib # Fallback/dependency for dataframe_image
 
