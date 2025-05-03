@@ -9,10 +9,10 @@ import io
 import dataframe_image as dfi # Added for image export
 
 # --- Configuration ---
-st.set_page_config(layout="wide", page_title="MUTUA FUNDS GUIDE - Stock Analyzer", page_icon="📊")
+st.set_page_config(layout="wide", page_title="Mutual Funds Guide - Stock Analyzer", page_icon="📊") # Corrected Brand Name
 
 # --- Branding --- #
-st.title("MUTUA FUNDS GUIDE")
+st.title("Mutual Funds Guide") # Corrected Brand Name
 st.caption("Created by Akhilesh Gururani ( akhilesh.gururani@gmail.com)")
 st.header("📊 Customizable Stock Analyzer")
 st.markdown("Upload your stock data (CSV or Excel) and rank stocks based on selected financial parameters and weights.")
@@ -49,7 +49,7 @@ AVAILABLE_PARAMS_CONFIG = {
 }
 
 # --- Helper Function for Image Export --- #
-@st.cache_data # Cache the generated image bytes
+# Removed @st.cache_data decorator to fix UnhashableParamError
 def convert_df_to_image(df_styled):
     """Converts a styled DataFrame to PNG image bytes."""
     try:
@@ -114,21 +114,17 @@ def load_data(uploaded_file):
     except Exception as e:
         return None, f"Error processing file: {e}"
 
-# --- Data Preprocessing ---
+# --- Data Preprocessing --- #
 def preprocess_data(df, selected_params):
-    """Handles missing values for selected parameters."""
+    """Handles missing values for selected parameters by filling with 0."""
     df_processed = df.copy()
     warnings = []
-    # Fill NaNs in selected numeric columns with the median
+    # Fill NaNs in selected numeric columns with 0
     for param in selected_params:
         if df_processed[param].isnull().any():
-            median_val = df_processed[param].median()
-            if pd.isna(median_val):
-                 df_processed[param].fillna(0, inplace=True)
-                 warnings.append(f"Column '{param}' contained only missing values after conversion; filled with 0.")
-            else:
-                df_processed[param].fillna(median_val, inplace=True)
-                warnings.append(f"Missing values found in '{param}'. Filled with median ({median_val:.2f}).")
+            num_missing = df_processed[param].isnull().sum()
+            df_processed[param].fillna(0, inplace=True)
+            warnings.append(f"Missing values ({num_missing}) found in '{param}'. Filled with 0.") # Updated Warning
 
     return df_processed, warnings
 
@@ -284,14 +280,22 @@ if selected_params and sum(params_weights.values()) > 0:
             mime='text/csv',
         )
         # Image Download
-        image_data = convert_df_to_image(df_styled)
-        if image_data:
-            col2.download_button(
-                label="Download Table as Image",
-                data=image_data,
-                file_name=f'top_{top_n}_stocks_ranked.png',
-                mime='image/png'
-            )
+        # Generate image data *outside* the download_button call if possible
+        # This avoids issues with Streamlit's rerun behavior
+        try:
+            image_data = convert_df_to_image(df_styled)
+            if image_data:
+                col2.download_button(
+                    label="Download Table as Image",
+                    data=image_data,
+                    file_name=f'top_{top_n}_stocks_ranked.png',
+                    mime='image/png'
+                )
+            else:
+                col2.warning("Image generation failed. Check logs.")
+        except Exception as img_e:
+             col2.error(f"Error during image generation setup: {img_e}")
+
 
         st.divider()
 
@@ -383,7 +387,11 @@ if selected_params and sum(params_weights.values()) > 0:
             except Exception as e:
                 st.error(f"Error displaying processed data table: {e}")
                 st.info("There might be an issue with data types or formatting after processing.")
-                st.dataframe(df_ranked[display_cols_processed]) # Display without formatting as fallback
+                # Display without formatting as fallback if columns exist
+                if 'display_cols_processed' in locals() and all(col in df_ranked.columns for col in display_cols_processed):
+                     st.dataframe(df_ranked[display_cols_processed])
+                else:
+                     st.warning("Could not display processed data due to missing columns or other errors.")
 
     else:
         st.warning("No data remaining after preprocessing. Check data quality or parameter selection.")
